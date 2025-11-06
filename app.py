@@ -10,15 +10,18 @@ try:
     from tensorflow.keras.models import Model
     from tensorflow.keras.layers import Input, Conv2D, LeakyReLU, Activation, BatchNormalization, Dropout, Concatenate, Conv2DTranspose
 except ImportError:
-    st.error("❌ ERROR: TensorFlow is not installed. Ensure 'tensorflow-cpu==2.12.0' is in requirements.txt.")
+    # Pesan error menunjukkan versi yang dikunci, untuk stabilitas cloud
+    st.error("❌ ERROR: TensorFlow tidak terinstal. Pastikan 'tensorflow-cpu==2.12.0' ada di requirements.txt.")
     st.stop()
     
 # ==============================================================================
-# CONFIGURATION & MODEL ARCHITECTURE 
+# KONFIGURASI & MODEL ARCHITECTURE 
 # ==============================================================================
 IMG_SIZE = 256
-# MODEL_G_PATH: Model is placed in the root folder for deployment stability
+# MODEL_G_PATH: Model ditempatkan di root folder untuk stabilitas deployment
 MODEL_G_PATH = 'pix2pix_tryon_G.h5' 
+
+# --- Fungsi Arsitektur Model UNet (Generator) ---
 
 def downsample(filters, size, apply_batchnorm=True):
     initializer = tf.random_normal_initializer(0., 0.02)
@@ -41,10 +44,21 @@ def upsample(filters, size, apply_dropout=False):
 
 @st.cache_resource
 def GeneratorUNet(input_shape=(IMG_SIZE, IMG_SIZE, 7), output_channels=3):
-    # 5-layer UNet architecture (must match your 25MB model weights)
+    # Arsitektur UNet 5-lapisan (harus sesuai dengan bobot 25MB Anda)
     inputs = Input(shape=input_shape)
-    down_stack = [ downsample(32, 4, apply_batchnorm=False), downsample(64, 4), downsample(128, 4), downsample(256, 4), downsample(512, 4, apply_batchnorm=False) ]
-    up_stack = [ upsample(256, 4, apply_dropout=True), upsample(128, 4), upsample(64, 4), upsample(32, 4) ]
+    down_stack = [ 
+        downsample(32, 4, apply_batchnorm=False), 
+        downsample(64, 4), 
+        downsample(128, 4), 
+        downsample(256, 4), 
+        downsample(512, 4, apply_batchnorm=False) 
+    ]
+    up_stack = [ 
+        upsample(256, 4, apply_dropout=True), 
+        upsample(128, 4), 
+        upsample(64, 4), 
+        upsample(32, 4) 
+    ]
 
     initializer = tf.random_normal_initializer(0., 0.02)
     last = Conv2DTranspose(output_channels, 4, strides=2, padding='same', kernel_initializer=initializer, activation='tanh')
@@ -64,7 +78,7 @@ def GeneratorUNet(input_shape=(IMG_SIZE, IMG_SIZE, 7), output_channels=3):
 # ==============================================================================
 
 def get_assets(folder):
-    # Checks for and retrieves asset file paths
+    # Memeriksa dan mengambil path file aset
     folder_path = os.path.join('assets', folder)
     if not os.path.exists(folder_path): 
         st.error(f"❌ KESALAHAN ASET: Folder '{folder_path}' not found.")
@@ -72,16 +86,16 @@ def get_assets(folder):
     return sorted(glob.glob(os.path.join(folder_path, '*')))
 
 def load_and_preprocess(img_data, is_mask=False):
-    # Loads and resizes input image to 256x256
+    # Memuat dan mengubah ukuran gambar input ke 256x256
     img = Image.open(img_data) if isinstance(img_data, str) else Image.open(img_data)
     img = img.convert('L' if is_mask else 'RGB').resize((IMG_SIZE, IMG_SIZE))
     img_np = np.array(img).astype(np.float32)
     if is_mask: img_np = img_np[..., np.newaxis]
-    return (img_np / 127.5) - 1.0 # Normalizes to [-1, 1]
+    return (img_np / 127.5) - 1.0 # Normalisasi ke [-1, 1]
 
 @st.cache_resource(show_spinner=False)
 def load_generator_model(placeholder):
-    # Function to load model weights only once
+    # Fungsi untuk memuat bobot model hanya sekali
     placeholder.info("⏳ Memuat Model AI (Pix2Pix Generator 25MB). Ini hanya dilakukan sekali...")
     if not os.path.exists(MODEL_G_PATH):
         placeholder.error(f"❌ MODEL TIDAK DITEMUKAN: Harap letakkan file model '{MODEL_G_PATH}' di root folder.")
@@ -96,26 +110,26 @@ def load_generator_model(placeholder):
         return None
 
 def process_inference(selected_shoe_path, input_feet_data, netG, col_result):
-    # Function to run the Virtual Try-On prediction
+    # Fungsi untuk menjalankan prediksi Virtual Try-On
     if netG is None: col_result.error("⚠️ Proses Try-On Gagal: Model AI tidak berhasil dimuat.") ; return
 
     with col_result:
-        with st.spinner("Processing and generating the virtual try-on image..."):
+        with st.spinner("Sedang memproses dan menghasilkan citra virtual try-on..."):
             try:
-                # Load and Preprocess Shoe (IC), Feet (IA)
+                # Muat dan Preprocessing Sepatu (IC), Kaki (IA)
                 ic_img_np = load_and_preprocess(selected_shoe_path, is_mask=False) 
                 ia_img_np = load_and_preprocess(input_feet_data, is_mask=False) 
-                # SIMULATE MASK (IM) - Channel 1 (Filled with white 255)
+                # SIMULASI MASKER (IM) - Channel 1 (diisi 255/putih)
                 im_img_np = (np.full((IMG_SIZE, IMG_SIZE, 1), 255.0, dtype=np.float32) / 127.5) - 1.0 
 
-                # Concatenate Input to (256, 256, 7) & Add Batch dimension
+                # Gabungkan Input ke (256, 256, 7) & Tambahkan dimensi Batch
                 input_tensor_7ch = np.concatenate([ia_img_np, ic_img_np, im_img_np], axis=-1)
                 input_tensor_4d = np.expand_dims(input_tensor_7ch, axis=0) 
 
                 # INFERENCE MODEL
                 fake_image_tf = netG(input_tensor_4d, training=False)
                 
-                # Convert result back to [0, 1] for display
+                # Konversi hasil kembali ke [0, 1] untuk tampilan
                 fake_image_np = (fake_image_tf.numpy()[0] * 0.5) + 0.5
                 fake_image_display = np.clip(fake_image_np, 0, 1)
 
@@ -133,21 +147,21 @@ def process_inference(selected_shoe_path, input_feet_data, netG, col_result):
 st.set_page_config(layout="wide", page_title="👟 Virtual Try-On Sepatu GAN")
 st.title("👟 Virtual Try-On Sepatu")
 
-# 1. Load Model with Dynamic Notification
+# 1. Muat Model dengan Notifikasi Dinamis
 model_status_placeholder = st.empty() 
 netG = load_generator_model(model_status_placeholder)
 
-# 2. Check Assets
+# 2. Periksa Aset
 shoe_assets = get_assets('shoes')
 feet_assets = get_assets('feet')
 if not shoe_assets or not feet_assets:
-    st.error("❌ **ASSET ERROR:** Ensure 'assets/shoes/' and 'assets/feet/' folders contain images.")
+    st.error("❌ **KESALAHAN ASET:** Pastikan folder 'assets/shoes/' and 'assets/feet/' folders contain images.")
     st.stop() 
 
-# Initialize Session State
+# Inisialisasi Session State
 if 'selected_shoe_path' not in st.session_state: st.session_state['selected_shoe_path'] = None
     
-# --- CATALOG DISPLAY ---
+# --- TAMPILAN KATALOG ---
 st.header("1. Pilih Sepatu (IC)")
 st.markdown("---")
 
@@ -168,7 +182,7 @@ for i, path in enumerate(shoe_assets):
             st.session_state['selected_shoe_name'] = shoe_name
             st.rerun() 
 
-# --- FEET INPUT & TRY-ON MENU ---
+# --- MENU INPUT KAKI & TRY-ON ---
 if st.session_state['selected_shoe_path']:
     
     st.markdown("---")
