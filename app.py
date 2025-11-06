@@ -4,20 +4,21 @@ import glob
 from PIL import Image
 import numpy as np
 
-# --- 0. Dependensi TensorFlow (Wajib di awal) ---
+# --- 0. TensorFlow Dependencies (Mandatory at the start) ---
 try:
     import tensorflow as tf
     from tensorflow.keras.models import Model
     from tensorflow.keras.layers import Input, Conv2D, LeakyReLU, Activation, BatchNormalization, Dropout, Concatenate, Conv2DTranspose
 except ImportError:
-    st.error("❌ ERROR: TensorFlow tidak terinstal. Pastikan 'tensorflow-cpu' ada di requirements.txt.")
+    st.error("❌ ERROR: TensorFlow is not installed. Ensure 'tensorflow-cpu==2.12.0' is in requirements.txt.")
     st.stop()
     
 # ==============================================================================
-# KONFIGURASI & MODEL ARCHITECTURE (Dipertahankan sama persis dengan bobot Anda)
+# CONFIGURATION & MODEL ARCHITECTURE 
 # ==============================================================================
 IMG_SIZE = 256
-MODEL_G_PATH = 'models/pix2pix_tryon_G.h5' 
+# MODEL_G_PATH: Model is placed in the root folder for deployment stability
+MODEL_G_PATH = 'pix2pix_tryon_G.h5' 
 
 def downsample(filters, size, apply_batchnorm=True):
     initializer = tf.random_normal_initializer(0., 0.02)
@@ -40,6 +41,7 @@ def upsample(filters, size, apply_dropout=False):
 
 @st.cache_resource
 def GeneratorUNet(input_shape=(IMG_SIZE, IMG_SIZE, 7), output_channels=3):
+    # 5-layer UNet architecture (must match your 25MB model weights)
     inputs = Input(shape=input_shape)
     down_stack = [ downsample(32, 4, apply_batchnorm=False), downsample(64, 4), downsample(128, 4), downsample(256, 4), downsample(512, 4, apply_batchnorm=False) ]
     up_stack = [ upsample(256, 4, apply_dropout=True), upsample(128, 4), upsample(64, 4), upsample(32, 4) ]
@@ -62,83 +64,90 @@ def GeneratorUNet(input_shape=(IMG_SIZE, IMG_SIZE, 7), output_channels=3):
 # ==============================================================================
 
 def get_assets(folder):
-    if not os.path.exists('assets'): os.makedirs('assets')
+    # Checks for and retrieves asset file paths
     folder_path = os.path.join('assets', folder)
-    if not os.path.exists(folder_path): os.makedirs(folder_path) 
+    if not os.path.exists(folder_path): 
+        st.error(f"❌ KESALAHAN ASET: Folder '{folder_path}' not found.")
+        st.stop()
     return sorted(glob.glob(os.path.join(folder_path, '*')))
 
 def load_and_preprocess(img_data, is_mask=False):
+    # Loads and resizes input image to 256x256
     img = Image.open(img_data) if isinstance(img_data, str) else Image.open(img_data)
     img = img.convert('L' if is_mask else 'RGB').resize((IMG_SIZE, IMG_SIZE))
     img_np = np.array(img).astype(np.float32)
     if is_mask: img_np = img_np[..., np.newaxis]
-    return (img_np / 127.5) - 1.0 
+    return (img_np / 127.5) - 1.0 # Normalizes to [-1, 1]
 
 @st.cache_resource(show_spinner=False)
 def load_generator_model(placeholder):
-    placeholder.info("⏳ Memuat Model AI (Pix2Pix Generator). Ini hanya dilakukan sekali...")
+    # Function to load model weights only once
+    placeholder.info("⏳ Memuat Model AI (Pix2Pix Generator 25MB). Ini hanya dilakukan sekali...")
     if not os.path.exists(MODEL_G_PATH):
-        placeholder.error(f"❌ MODEL TIDAK DITEMUKAN: Harap letakkan file model '{MODEL_G_PATH}'.")
+        placeholder.error(f"❌ MODEL TIDAK DITEMUKAN: Harap letakkan file model '{MODEL_G_PATH}' di root folder.")
         return None
     try:
         netG = GeneratorUNet()
         netG.load_weights(MODEL_G_PATH)
-        placeholder.success("🎉 Model AI siap digunakan!") # Notif sukses
-        # Placeholder akan tetap tampil sampai ada yang menggantikannya
+        placeholder.success("🎉 Model AI siap digunakan!")
         return netG
     except Exception as e:
-        placeholder.error(f"❌ Gagal memuat bobot model: File model mungkin rusak. Error: {e}")
+        placeholder.error(f"❌ Gagal memuat bobot model: Pastikan arsitektur UNet sudah benar. Error: {e}")
         return None
 
 def process_inference(selected_shoe_path, input_feet_data, netG, col_result):
+    # Function to run the Virtual Try-On prediction
     if netG is None: col_result.error("⚠️ Proses Try-On Gagal: Model AI tidak berhasil dimuat.") ; return
 
     with col_result:
-        with st.spinner("Sedang memproses dan menghasilkan citra virtual try-on..."):
+        with st.spinner("Processing and generating the virtual try-on image..."):
             try:
-                # Muat dan Preprocessing
+                # Load and Preprocess Shoe (IC), Feet (IA)
                 ic_img_np = load_and_preprocess(selected_shoe_path, is_mask=False) 
                 ia_img_np = load_and_preprocess(input_feet_data, is_mask=False) 
-                im_img_np = (np.full((IMG_SIZE, IMG_SIZE, 1), 255.0, dtype=np.float32) / 127.5) - 1.0 # Masker Simulasi
+                # SIMULATE MASK (IM) - Channel 1 (Filled with white 255)
+                im_img_np = (np.full((IMG_SIZE, IMG_SIZE, 1), 255.0, dtype=np.float32) / 127.5) - 1.0 
 
-                # Gabungkan Input
+                # Concatenate Input to (256, 256, 7) & Add Batch dimension
                 input_tensor_7ch = np.concatenate([ia_img_np, ic_img_np, im_img_np], axis=-1)
                 input_tensor_4d = np.expand_dims(input_tensor_7ch, axis=0) 
 
-                # INFERENCE & Output
+                # INFERENCE MODEL
                 fake_image_tf = netG(input_tensor_4d, training=False)
+                
+                # Convert result back to [0, 1] for display
                 fake_image_np = (fake_image_tf.numpy()[0] * 0.5) + 0.5
                 fake_image_display = np.clip(fake_image_np, 0, 1)
 
                 st.subheader("Hasil Virtual Try-On")
-                st.image(fake_image_display, caption="Hasil Generasi Sepatu Baru", use_column_width=True)
+                st.image(fake_image_display, caption="Generated New Shoe Result", use_column_width=True)
 
             except Exception as e:
-                st.error(f"Terjadi Kesalahan saat Inference: {e}")
+                st.error(f"An error occurred during Inference: {e}")
+
 
 # ==============================================================================
 # STREAMLIT UI
 # ==============================================================================
 
-st.set_page_config(layout="wide", page_title="Virtual Try-On Sepatu GAN")
+st.set_page_config(layout="wide", page_title="👟 Virtual Try-On Sepatu GAN")
 st.title("👟 Virtual Try-On Sepatu")
 
-# 1. Muat Model dengan Notifikasi Dinamis
+# 1. Load Model with Dynamic Notification
 model_status_placeholder = st.empty() 
 netG = load_generator_model(model_status_placeholder)
 
-# 2. Periksa Aset
+# 2. Check Assets
 shoe_assets = get_assets('shoes')
 feet_assets = get_assets('feet')
 if not shoe_assets or not feet_assets:
-    st.error("❌ **KESALAHAN ASET:** Pastikan folder `assets/shoes/` dan `assets/feet/` terisi gambar.")
+    st.error("❌ **ASSET ERROR:** Ensure 'assets/shoes/' and 'assets/feet/' folders contain images.")
     st.stop() 
 
-# Inisialisasi Session State
+# Initialize Session State
 if 'selected_shoe_path' not in st.session_state: st.session_state['selected_shoe_path'] = None
-if 'selected_shoe_name' not in st.session_state: st.session_state['selected_shoe_name'] = None
     
-# --- TAMPILAN KATALOG (Klik pada Gambar) ---
+# --- CATALOG DISPLAY ---
 st.header("1. Pilih Sepatu (IC)")
 st.markdown("---")
 
@@ -149,27 +158,23 @@ for i, path in enumerate(shoe_assets):
     is_selected = st.session_state['selected_shoe_path'] == path
 
     with cols[i]:
-        # Tampilkan Gambar
         st.image(path, caption=shoe_name, use_column_width=True)
         
-        # Tombol untuk memilih (diletakkan di bawah gambar, tetapi tombolnya sendiri kecil/tersembunyi)
-        # Kita membuat tombol yang menarik perhatian
         button_label = f"✅ Dipilih" if is_selected else "Pilih Sepatu ini"
-        button_type = "secondary" if not is_selected else "primary"
+        button_type = "primary" if is_selected else "secondary" 
         
         if st.button(button_label, key=f"select_shoe_{i}", use_container_width=True, type=button_type):
             st.session_state['selected_shoe_path'] = path
             st.session_state['selected_shoe_name'] = shoe_name
             st.rerun() 
 
-# --- MENU INPUT KAKI & TRY-ON ---
+# --- FEET INPUT & TRY-ON MENU ---
 if st.session_state['selected_shoe_path']:
     
     st.markdown("---")
-    st.header(f"Sepatu Dipilih: {st.session_state['selected_shoe_name']}")
-    st.subheader("2. Input Kaki (IA) & Try-On")
+    st.subheader(f"Sepatu Dipilih: {st.session_state['selected_shoe_name']}")
+    st.header("2. Input Kaki (IA) & Try-On")
     
-    # Membagi layout untuk Input dan Hasil
     col_input, col_result = st.columns([1, 2])
     
     with col_input:
@@ -177,22 +182,18 @@ if st.session_state['selected_shoe_path']:
         input_method = st.radio("Pilih Metode Input Kaki:", ("Pilih dari Galeri", "Unggah Citra Baru"), key='input_method_radio')
         input_feet_data = None 
         
-        # OPSI GALERI
         if input_method == "Pilih dari Galeri":
             feet_options = [os.path.basename(p) for p in feet_assets]
             selected_feet_name = st.selectbox("Pilih Bentuk Kaki:", feet_options, index=0, key='select_feet_gallery')
             input_feet_data = os.path.join('assets', 'feet', selected_feet_name)
             
-        # OPSI UNGGAH
         else:
             uploaded_file = st.file_uploader("Unggah Citra Kaki (JPG, PNG)", type=["jpg", "png", "jpeg"], key='feet_uploader')
             if uploaded_file is not None: input_feet_data = uploaded_file
         
-        # Menampilkan Pratinjau Kaki
-        if input_feet_data is not None:
+        if input_feet_data is not None and netG is not None:
             st.image(input_feet_data, caption="Pratinjau Kaki Pilihan", width=200)
 
-        # TOMBOL TRY-ON
         st.markdown("<br>", unsafe_allow_html=True)
         tryon_disabled = netG is None or input_feet_data is None
         
@@ -200,6 +201,6 @@ if st.session_state['selected_shoe_path']:
             process_inference(st.session_state['selected_shoe_path'], input_feet_data, netG, col_result)
         
         if tryon_disabled and netG is None:
-            st.warning("⚠️ Try-On dinonaktifkan karena Model AI gagal dimuat. Periksa folder `models/`.")
+            st.warning("⚠️ Try-On dinonaktifkan: Model AI gagal dimuat.")
         elif tryon_disabled and input_feet_data is None:
             st.warning("Mohon pilih atau unggah citra kaki terlebih dahulu.")
